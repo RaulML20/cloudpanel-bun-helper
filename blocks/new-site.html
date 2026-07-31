@@ -1,0 +1,57 @@
+{# BEGIN cloudpanel-bun-helper #}
+<script>
+/* cloudpanel-bun-helper: adds a "Create a Bun Site" card to the new-site page.
+   The card is cloned from the Reverse Proxy one, so it inherits whatever markup
+   and classes this CloudPanel version uses instead of hardcoding them. */
+(function () {
+  var container = document.querySelector('.site-type-container');
+  if (!container || document.getElementById('bun-site-card')) return;
+
+  var reference = null;
+  var anchors = container.querySelectorAll('a[href]');
+
+  for (var i = 0; i < anchors.length; i++) {
+    if (/reverse[-_]proxy/i.test(anchors[i].getAttribute('href') || '')) {
+      reference = anchors[i];
+      break;
+    }
+  }
+
+  if (!reference) return;
+
+  var source = reference.closest('.application');
+  if (!source) return;
+
+  var href = reference.getAttribute('href');
+  var card = source.cloneNode(true);
+  card.id = 'bun-site-card';
+
+  var link = card.querySelector('a[href]');
+  if (!link) return;
+  link.setAttribute('href', href + (href.indexOf('?') === -1 ? '?' : '&') + 'option=bun');
+  link.textContent = 'Create a Bun Site';
+
+  var image = card.querySelector('img');
+  if (image) {
+    var original = image.getAttribute('src') || '';
+    image.setAttribute('alt', 'Create a Bun Site');
+    image.onerror = function () {
+      this.onerror = null;
+      this.src = original;
+    };
+
+    /* CloudPanel appends a cache-busting query string to asset URLs
+       (reverse_proxy.svg?v=2.5.3), so the filename is not at the end of the
+       string: match path + filename + optional query separately instead of
+       anchoring ".svg" to the end. */
+    var parsed = /^(.*\/)[^\/?]+\.svg(\?.*)?$/.exec(original);
+
+    if (parsed) {
+      image.setAttribute('src', parsed[1] + 'bun.svg' + (parsed[2] || ''));
+    }
+  }
+
+  container.appendChild(card);
+})();
+</script>
+{# END cloudpanel-bun-helper #}

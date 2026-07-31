@@ -1,0 +1,101 @@
+{# BEGIN cloudpanel-bun-helper #}
+<script>
+/* cloudpanel-bun-helper: shows BUN in the APP column for Bun-managed domains.
+   Everything happens client side, on rows that are already rendered, so this
+   works with the stock sites table and with a table rewritten by another
+   extension (for example cloudpanel-sites-helper's grouped rows) alike. */
+(function () {
+  var bunHelperPort = '__BUN_HELPER_PORT__';
+  var bunApiBase = 'https://' + window.location.hostname + ':' + bunHelperPort;
+
+  var KNOWN_APPS = ['nodejs', 'node.js', 'php', 'static', 'python', 'wordpress', 'reverse proxy', 'reverse-proxy'];
+
+  function findTable() {
+    return document.querySelector('table.table-sites') || document.querySelector('#sites-table');
+  }
+
+  /* The APP column position is read from the header when possible, so a
+     reordered or translated table still works; scanning the row for a known
+     application label is the fallback. */
+  function findAppColumnIndex(table) {
+    var headers = table.querySelectorAll('thead th');
+
+    for (var i = 0; i < headers.length; i++) {
+      if ((headers[i].textContent || '').trim().toLowerCase() === 'app') return i;
+    }
+
+    var cells = table.querySelectorAll('tbody tr td');
+
+    for (var j = 0; j < cells.length; j++) {
+      var value = (cells[j].textContent || '').trim().toLowerCase();
+
+      if (KNOWN_APPS.indexOf(value) !== -1) {
+        return Array.prototype.indexOf.call(cells[j].parentNode.children, cells[j]);
+      }
+    }
+
+    return -1;
+  }
+
+  function domainOfRow(row) {
+    var firstCell = row.children[0];
+    if (!firstCell) return '';
+    return (firstCell.textContent || '').trim().toLowerCase();
+  }
+
+  function apply(domains) {
+    var table = findTable();
+    if (!table) return;
+
+    var appIndex = findAppColumnIndex(table);
+    if (appIndex === -1) return;
+
+    var rows = table.querySelectorAll('tbody tr');
+
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      var domain = domainOfRow(row);
+
+      if (!domain || !domains[domain]) continue;
+
+      var cell = row.children[appIndex];
+      if (!cell || cell.getAttribute('data-bun-app') === '1') continue;
+
+      cell.setAttribute('data-bun-app', '1');
+      cell.textContent = 'BUN';
+    }
+  }
+
+  function load() {
+    fetch(bunApiBase + '/api/sites', { credentials: 'include' })
+      .then(function (response) { return response.json(); })
+      .then(function (payload) {
+        if (!payload || !payload.ok || !payload.domains) return;
+
+        var domains = {};
+        payload.domains.forEach(function (item) { domains[String(item.domainName).toLowerCase()] = item; });
+
+        apply(domains);
+
+        /* Another extension may re-render the rows (filtering, grouping,
+           sorting) after we ran; re-apply when the body changes. */
+        var table = findTable();
+        var body = table ? table.querySelector('tbody') : null;
+
+        if (body && window.MutationObserver) {
+          new MutationObserver(function () { apply(domains); }).observe(body, { childList: true, subtree: true });
+        }
+      })
+      .catch(function () {
+        /* Helper unreachable: leave the table exactly as CloudPanel rendered it. */
+      });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', load);
+  } else {
+    load();
+  }
+})();
+</script>
+{# END cloudpanel-bun-helper #}

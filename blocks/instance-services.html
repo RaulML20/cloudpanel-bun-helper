@@ -1,0 +1,215 @@
+{# BEGIN cloudpanel-bun-helper #}
+<script>
+/* cloudpanel-bun-helper: adds a "Bun Versions" card below the services table,
+   listing the Bun releases published on GitHub and the ones installed here. */
+(function () {
+  var bunHelperPort = '__BUN_HELPER_PORT__';
+  var bunApiBase = 'https://' + window.location.hostname + ':' + bunHelperPort;
+
+  function start() {
+    var container = document.querySelector('.instance-services-container');
+    if (!container || document.getElementById('bun-versions-card')) return;
+
+    var card = document.createElement('div');
+    card.className = 'card card-table mt-4';
+    card.id = 'bun-versions-card';
+    card.innerHTML =
+      '<div class="card-header d-flex justify-content-between">' +
+        '<span>Bun Versions</span>' +
+        '<button type="button" id="bun-catalog-refresh" class="btn btn-sm btn-white">Refresh Catalog</button>' +
+      '</div>' +
+      '<div class="card-body card-body-no-padding">' +
+        '<div id="bun-catalog-error" class="alert alert-danger m-3" style="display: none; white-space: pre-wrap;"></div>' +
+        '<table class="table table-users">' +
+          '<thead><tr>' +
+            '<th width="150">Status</th>' +
+            '<th width="150">Version</th>' +
+            '<th>In Use By</th>' +
+            '<th width="200" class="text-end">Action</th>' +
+          '</tr></thead>' +
+          '<tbody id="bun-versions-tbody"><tr><td colspan="4">Loading Bun versions...</td></tr></tbody>' +
+        '</table>' +
+      '</div>';
+    container.appendChild(card);
+
+    var tbody = document.getElementById('bun-versions-tbody');
+    var errorBox = document.getElementById('bun-catalog-error');
+    var refreshButton = document.getElementById('bun-catalog-refresh');
+    var busy = false;
+
+    function api(path, options) {
+      options = options || {};
+      options.credentials = 'include';
+      if (options.body) options.headers = { 'Content-Type': 'application/json' };
+
+      return fetch(bunApiBase + path, options).then(function (response) {
+        return response.json().then(function (payload) {
+          if (!response.ok || !payload.ok) {
+            throw new Error(payload && payload.error ? payload.error : 'Request failed');
+          }
+          return payload;
+        });
+      });
+    }
+
+    function showError(message) {
+      errorBox.textContent = message;
+      errorBox.style.display = '';
+    }
+
+    function setMessage(message) {
+      tbody.innerHTML = '';
+      var row = document.createElement('tr');
+      var cell = document.createElement('td');
+      cell.colSpan = 4;
+      cell.textContent = message;
+      row.appendChild(cell);
+      tbody.appendChild(row);
+    }
+
+    function actionLink(label, handler, disabled, title) {
+      var link = document.createElement('a');
+      link.href = 'javascript:void(0);';
+      link.textContent = label;
+
+      if (disabled) {
+        link.style.opacity = '0.5';
+        link.style.cursor = 'not-allowed';
+        if (title) link.title = title;
+      } else {
+        link.addEventListener('click', handler);
+      }
+
+      return link;
+    }
+
+    // Bun cuts releases often; the full catalogue can run to hundreds of rows.
+    // Installed versions are always shown (there are only ever a handful), plus
+    // the 5 most recent available ones -- the rest sit behind "View More".
+    var VISIBLE_AVAILABLE_COUNT = 5;
+
+    function buildRow(item) {
+      var row = document.createElement('tr');
+
+      var statusCell = document.createElement('td');
+      var badge = document.createElement('span');
+      badge.className = 'label-outline ' + (item.installed ? 'label-outline-green' : 'label-outline-orange');
+      badge.textContent = item.installed ? 'Installed' : 'Available';
+      statusCell.appendChild(badge);
+      row.appendChild(statusCell);
+
+      var versionCell = document.createElement('td');
+      versionCell.textContent = 'Bun ' + item.version;
+      row.appendChild(versionCell);
+
+      var inUseCell = document.createElement('td');
+      inUseCell.textContent = item.inUse.length ? item.inUse.join(', ') : '-';
+      row.appendChild(inUseCell);
+
+      var actionCell = document.createElement('td');
+      actionCell.className = 'text-end table-actions';
+
+      if (item.installed) {
+        var inUse = item.inUse.length > 0;
+
+        actionCell.appendChild(actionLink('Uninstall', function () {
+          if (busy) return;
+          if (!confirm('Uninstall Bun ' + item.version + '?')) return;
+
+          busy = true;
+          errorBox.style.display = 'none';
+          badge.textContent = 'Removing...';
+
+          api('/api/versions/remove', { method: 'POST', body: JSON.stringify({ version: item.version }) })
+            .then(load)
+            .catch(function (error) {
+              badge.textContent = 'Installed';
+              showError(error.message);
+            })
+            .then(function () { busy = false; });
+        }, inUse, inUse ? 'In use by: ' + item.inUse.join(', ') : null));
+      } else {
+        actionCell.appendChild(actionLink('Install', function () {
+          if (busy) return;
+
+          busy = true;
+          errorBox.style.display = 'none';
+          badge.textContent = 'Installing...';
+
+          api('/api/versions/install', { method: 'POST', body: JSON.stringify({ version: item.version }) })
+            .then(load)
+            .catch(function (error) {
+              badge.textContent = 'Available';
+              showError(error.message);
+            })
+            .then(function () { busy = false; });
+        }, false, null));
+      }
+
+      row.appendChild(actionCell);
+      return row;
+    }
+
+    function render(payload) {
+      tbody.innerHTML = '';
+
+      if (!payload.versions.length) {
+        setMessage('No Bun versions found. Could not reach the GitHub catalogue.');
+        return;
+      }
+
+      var installed = payload.versions.filter(function (item) { return item.installed; });
+      var available = payload.versions.filter(function (item) { return !item.installed; });
+      var visibleAvailable = available.slice(0, VISIBLE_AVAILABLE_COUNT);
+      var restAvailable = available.slice(VISIBLE_AVAILABLE_COUNT);
+
+      installed.forEach(function (item) { tbody.appendChild(buildRow(item)); });
+      visibleAvailable.forEach(function (item) { tbody.appendChild(buildRow(item)); });
+
+      if (!restAvailable.length) return;
+
+      var viewMoreRow = document.createElement('tr');
+      var viewMoreCell = document.createElement('td');
+      viewMoreCell.colSpan = 4;
+      viewMoreCell.className = 'text-center';
+
+      var viewMoreLink = document.createElement('a');
+      viewMoreLink.href = 'javascript:void(0);';
+      viewMoreLink.textContent = 'View ' + restAvailable.length + ' more version' + (restAvailable.length === 1 ? '' : 's');
+      viewMoreLink.addEventListener('click', function () {
+        restAvailable.forEach(function (item) { tbody.insertBefore(buildRow(item), viewMoreRow); });
+        viewMoreRow.remove();
+      });
+
+      viewMoreCell.appendChild(viewMoreLink);
+      viewMoreRow.appendChild(viewMoreCell);
+      tbody.appendChild(viewMoreRow);
+    }
+
+    function load(forceRefresh) {
+      setMessage('Loading Bun versions...');
+
+      return api('/api/versions' + (forceRefresh === true ? '?refresh=1' : ''))
+        .then(render)
+        .catch(function (error) {
+          setMessage('Could not load Bun versions.');
+          showError(error.message + ' - Is the Bun helper service running?');
+        });
+    }
+
+    refreshButton.addEventListener('click', function () {
+      errorBox.style.display = 'none';
+      load(true);
+    });
+
+    load();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
+  }
+})();
+</script>
+{# END cloudpanel-bun-helper #}

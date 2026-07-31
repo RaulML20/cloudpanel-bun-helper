@@ -1,0 +1,157 @@
+{# BEGIN cloudpanel-bun-helper #}
+<script>
+/* cloudpanel-bun-helper: turns the Reverse Proxy form into "New Bun Site" when
+   the page is opened with ?option=bun. Without that parameter nothing here runs
+   and the page behaves exactly as CloudPanel shipped it. */
+(function () {
+  if (new URLSearchParams(window.location.search).get('option') !== 'bun') return;
+
+  var bunHelperPort = '__BUN_HELPER_PORT__';
+  var bunApiBase = 'https://' + window.location.hostname + ':' + bunHelperPort;
+
+  function start() {
+    var domainInput = document.getElementById('site_new_reverse_proxy_domainName');
+    var urlInput = document.getElementById('site_new_reverse_proxy_reverseProxyUrl');
+    var userInput = document.getElementById('site_new_reverse_proxy_siteUser');
+    var passwordInput = document.getElementById('site_new_reverse_proxy_siteUserPassword');
+
+    if (!domainInput || !urlInput || !userInput || !passwordInput) return;
+
+    var form = domainInput.closest('form');
+    if (!form) return;
+
+    var title = document.querySelector('.page-title h1');
+    if (title) title.textContent = 'New Bun Site';
+    document.title = 'New Bun Site';
+
+    /* The reverse proxy URL is derived from the port, so its column is replaced
+       by an App Port one. The input keeps a valid value and stops being
+       required: a hidden required field would make the browser refuse to fire
+       the submit event at all. */
+    var urlColumn = urlInput.closest('[class*="col-"]') || urlInput.parentNode;
+    urlInput.required = false;
+    urlInput.value = 'http://127.0.0.1:30000';
+    urlColumn.style.display = 'none';
+
+    var portColumn = document.createElement('div');
+    portColumn.className = urlColumn.className;
+    portColumn.innerHTML =
+      '<label class="col-form-label" for="bun-app-port">App Port *</label>' +
+      '<input type="number" id="bun-app-port" class="form-control" min="1024" max="65535" step="1">' +
+      '<div class="form-text d-flex">Local port your Bun application will listen on.</div>';
+    urlColumn.parentNode.insertBefore(portColumn, urlColumn.nextSibling);
+
+    var portInput = document.getElementById('bun-app-port');
+
+    var errorBox = document.createElement('div');
+    errorBox.className = 'alert alert-danger';
+    errorBox.style.display = 'none';
+    errorBox.style.whiteSpace = 'pre-wrap';
+    var cardForm = form.querySelector('.card-form') || form;
+    cardForm.insertBefore(errorBox, cardForm.firstChild);
+
+    function showError(message) {
+      errorBox.textContent = message;
+      errorBox.style.display = '';
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    var submitButton = form.querySelector('[type="submit"]');
+    var submitLabel = submitButton ? (submitButton.value || submitButton.textContent) : '';
+
+    fetch(bunApiBase + '/api/ports/suggest', { credentials: 'include' })
+      .then(function (response) { return response.json(); })
+      .then(function (payload) {
+        if (payload && payload.ok && !portInput.value) portInput.value = payload.port;
+      })
+      .catch(function () {
+        if (!portInput.value) portInput.value = '30000';
+      });
+
+    /* The server also refuses to create a Bun site with no runtime installed,
+       but checking here too saves the user from filling in the whole form
+       just to hit that error on submit. */
+    fetch(bunApiBase + '/api/versions', { credentials: 'include' })
+      .then(function (response) { return response.json(); })
+      .then(function (payload) {
+        var hasInstalled = payload && payload.ok && payload.versions.some(function (v) { return v.installed; });
+        if (hasInstalled) return;
+
+        showError('No Bun version is installed on this server yet. Install one first from Admin Area > Instance > Services.');
+        if (submitButton) submitButton.disabled = true;
+      })
+      .catch(function () {
+        // Helper unreachable: let the submit attempt surface the real error.
+      });
+
+    function setSubmitLabel(text) {
+      if (!submitButton) return;
+      if (submitButton.tagName === 'INPUT') submitButton.value = text;
+      else submitButton.textContent = text;
+    }
+
+    /* CloudPanel's own submit handling is bypassed: the site is created through
+       the helper, which runs clpctl and records the domain as a Bun site. */
+    form.setAttribute('novalidate', 'novalidate');
+    form.addEventListener('submit', function (event) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      errorBox.style.display = 'none';
+
+      var domainName = (domainInput.value || '').trim();
+      var siteUser = (userInput.value || '').trim();
+      var siteUserPassword = passwordInput.value || '';
+      var port = parseInt(portInput.value, 10);
+
+      if (!domainName) { showError('Domain Name is required.'); return; }
+      if (!port || port < 1024 || port > 65535) { showError('App Port must be a number between 1024 and 65535.'); return; }
+      if (!siteUser) { showError('Site User is required.'); return; }
+      if (!siteUserPassword) { showError('Site User Password is required.'); return; }
+
+      if (submitButton) submitButton.disabled = true;
+      setSubmitLabel('Creating...');
+
+      fetch(bunApiBase + '/api/sites', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          domainName: domainName,
+          port: port,
+          siteUser: siteUser,
+          siteUserPassword: siteUserPassword
+        })
+      })
+        .then(function (response) {
+          return response.json().then(function (payload) { return { response: response, payload: payload }; });
+        })
+        .then(function (result) {
+          if (result.response.ok && result.payload.ok) {
+            // Lands the user straight on the new site's own Settings page,
+            // where the Bun Settings card lets them pick a version and enable
+            // it. This path is confirmed against a real CloudPanel install
+            // (an earlier version guessed '/site' instead, which is the most
+            // likely reason creating a site used to kick the user out of the
+            // panel).
+            setSubmitLabel('Created');
+            window.location.href = '/site/' + encodeURIComponent(domainName) + '/settings';
+            return;
+          }
+          throw new Error(result.payload && result.payload.error ? result.payload.error : 'The Bun site could not be created.');
+        })
+        .catch(function (error) {
+          showError(error.message || 'The Bun site could not be created. Is the Bun helper service running?');
+          if (submitButton) submitButton.disabled = false;
+          setSubmitLabel(submitLabel);
+        });
+    }, true);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
+  }
+})();
+</script>
+{# END cloudpanel-bun-helper #}

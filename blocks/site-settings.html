@@ -1,0 +1,376 @@
+{# BEGIN cloudpanel-bun-helper #}
+<script>
+/* cloudpanel-bun-helper: adds a "Bun Settings" card to the site settings page.
+   The card is only shown once the helper confirms this domain is a Bun site, so
+   the page is untouched for every other kind of site. */
+(function () {
+  var bunHelperPort = '__BUN_HELPER_PORT__';
+  var bunApiBase = 'https://' + window.location.hostname + ':' + bunHelperPort;
+
+  /* Read from the page instead of a Twig variable, so this block stays plain
+     JavaScript and does not depend on the template exposing a given variable.
+     CloudPanel puts the domain on the delete-confirmation input; the URL is the
+     fallback. A wrong guess is harmless: the API answers 404 and the card stays
+     hidden. */
+  function detectDomain() {
+    var deleteInput = document.getElementById('site_delete_domainName');
+
+    if (deleteInput) {
+      var attribute = deleteInput.getAttribute('data-domain-name');
+      if (attribute) return attribute.trim().toLowerCase();
+    }
+
+    var segments = window.location.pathname.split('/').filter(Boolean);
+
+    for (var i = segments.length - 1; i >= 0; i--) {
+      var candidate = decodeURIComponent(segments[i]).trim().toLowerCase();
+
+      if (candidate.indexOf('.') !== -1 && /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(candidate)) {
+        return candidate;
+      }
+    }
+
+    return '';
+  }
+
+  var bunDomain = '';
+
+  function start() {
+    bunDomain = detectDomain();
+    if (!bunDomain) return;
+
+    var content = document.querySelector('.site-content');
+    if (!content || document.getElementById('bun-settings-card')) return;
+
+    var card = document.createElement('div');
+    card.className = 'card';
+    card.id = 'bun-settings-card';
+    card.style.display = 'none';
+    card.innerHTML =
+      '<div class="card-header d-flex justify-content-between">' +
+        '<div class="card-header-switch">' +
+          '<div class="form-check form-switch">' +
+            '<input class="form-check-input" type="checkbox" role="switch" id="bun-enabled">' +
+            '<label class="form-check-label" for="bun-enabled">Enable Bun</label>' +
+          '</div>' +
+        '</div>' +
+        '<span id="bun-status-badge" class="label-outline label-outline-orange">Stopped</span>' +
+      '</div>' +
+      '<div class="card-body card-body-no-padding">' +
+        '<div class="card-form">' +
+          '<div id="bun-settings-error" class="alert alert-danger" style="display: none; white-space: pre-wrap;"></div>' +
+          '<div id="bun-settings-success" class="alert alert-success" style="display: none;"></div>' +
+          '<div class="row">' +
+            '<div class="col-4">' +
+              '<label class="col-form-label" for="bun-version">Bun Version *</label>' +
+              '<select id="bun-version" class="form-select"></select>' +
+              '<div class="form-text">Versions are installed in Admin Area &gt; Instance &gt; Services.</div>' +
+            '</div>' +
+            '<div class="col-4">' +
+              '<label class="col-form-label" for="bun-start-script">Start Script *</label>' +
+              '<input type="text" id="bun-start-script" class="form-control" placeholder="index.ts">' +
+            '</div>' +
+            '<div class="col-4">' +
+              '<label class="col-form-label" for="bun-port">App Port *</label>' +
+              '<input type="number" id="bun-port" class="form-control" min="1024" max="65535" step="1">' +
+            '</div>' +
+          '</div>' +
+          '<div class="row">' +
+            '<div class="col text-end">' +
+              '<button type="button" id="bun-install-deps" class="btn btn-gray btn-lg">Install Dependencies</button> ' +
+              '<button type="button" id="bun-restart" class="btn btn-gray btn-lg">Restart Application</button> ' +
+              '<button type="button" id="bun-save" class="btn btn-primary btn-lg">Save</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="row">' +
+            '<div class="col">' +
+              '<label class="col-form-label">Application Logs</label>' +
+              '<pre id="bun-logs" style="background: #000; color: #f8f8f2; font-family: Menlo, Monaco, Consolas, monospace; font-size: 12px; height: 280px; overflow: auto; padding: 10px; border-radius: 4px; white-space: pre-wrap; margin-bottom: 8px;">No logs yet.</pre>' +
+              '<button type="button" id="bun-logs-refresh" class="btn btn-sm btn-gray">Refresh Logs</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    /* Sits right above the Delete Site card, where the Node.js and Python
+       cards sit for their own site types. */
+    var deleteTrigger = content.querySelector('[data-bs-target="#delete-site-modal"]');
+    var deleteCard = deleteTrigger ? deleteTrigger.closest('.card') : null;
+
+    if (deleteCard) content.insertBefore(card, deleteCard);
+    else content.appendChild(card);
+
+    var enabledInput = document.getElementById('bun-enabled');
+    var versionSelect = document.getElementById('bun-version');
+    var startScriptInput = document.getElementById('bun-start-script');
+    var portInput = document.getElementById('bun-port');
+    var saveButton = document.getElementById('bun-save');
+    var installDepsButton = document.getElementById('bun-install-deps');
+    var restartButton = document.getElementById('bun-restart');
+    var statusBadge = document.getElementById('bun-status-badge');
+    var logsBox = document.getElementById('bun-logs');
+    var logsButton = document.getElementById('bun-logs-refresh');
+    var errorBox = document.getElementById('bun-settings-error');
+    var successBox = document.getElementById('bun-settings-success');
+
+    function api(path, options) {
+      options = options || {};
+      options.credentials = 'include';
+      if (options.body) options.headers = { 'Content-Type': 'application/json' };
+
+      return fetch(bunApiBase + path, options).then(function (response) {
+        return response.json().then(function (payload) {
+          if (!response.ok || !payload.ok) {
+            throw new Error(payload && payload.error ? payload.error : 'Request failed');
+          }
+          return payload;
+        });
+      });
+    }
+
+    function showError(message) {
+      successBox.style.display = 'none';
+      errorBox.textContent = message;
+      errorBox.style.display = '';
+    }
+
+    function showSuccess(message) {
+      errorBox.style.display = 'none';
+      successBox.textContent = message;
+      successBox.style.display = '';
+      setTimeout(function () { successBox.style.display = 'none'; }, 4000);
+    }
+
+    function clearMessages() {
+      errorBox.style.display = 'none';
+      successBox.style.display = 'none';
+    }
+
+    /* nginx proxies the domain to 127.0.0.1:<port>, and that value lives in
+       CloudPanel's own Reverse Proxy Settings card, not this one. That card is
+       hidden below (it does not apply once Bun owns the port), so the only way
+       left to keep nginx in step with a port change here is to fill its hidden
+       field ourselves and submit CloudPanel's own form for it -- there is no
+       verified clpctl command to do this instead. That form is a plain Symfony
+       one (full POST + reload, same as every other card on this page), so a
+       programmatic .submit() is exactly what clicking its own Save button
+       would have done. */
+    function findReverseProxyInput() {
+      var inputs = document.querySelectorAll('input, textarea');
+
+      for (var i = 0; i < inputs.length; i++) {
+        var identity = (inputs[i].id || '') + ' ' + (inputs[i].name || '');
+        if (/reverseproxyurl/i.test(identity)) return inputs[i];
+      }
+
+      return null;
+    }
+
+    function hideReverseProxyCard() {
+      var input = findReverseProxyInput();
+      var card = input ? input.closest('.card') : null;
+      if (card) card.style.display = 'none';
+    }
+
+    // Returns 'match' (nothing to do), 'synced' (submitted, page is navigating
+    // away) or 'unavailable' (the field could not be found -- an unexpected
+    // CloudPanel layout; the caller is responsible for telling the user).
+    function syncReverseProxyPort(port) {
+      var input = findReverseProxyInput();
+      var form = input ? input.closest('form') : null;
+
+      if (!input || !form) return 'unavailable';
+
+      var wanted = 'http://127.0.0.1:' + port;
+      if ((input.value || '').trim() === wanted) return 'match';
+
+      input.value = wanted;
+      form.submit();
+      return 'synced';
+    }
+
+    function renderStatus(status) {
+      var state = status && status.status ? status.status : 'none';
+      statusBadge.classList.remove('label-outline-green', 'label-outline-orange', 'label-outline-red');
+
+      if (state === 'online' || state === 'launching') {
+        statusBadge.classList.add('label-outline-green');
+        statusBadge.textContent = 'Running';
+      } else if (state === 'errored') {
+        statusBadge.classList.add('label-outline-red');
+        statusBadge.textContent = 'Errored';
+      } else {
+        statusBadge.classList.add('label-outline-orange');
+        statusBadge.textContent = 'Stopped';
+      }
+
+      restartButton.disabled = state === 'none';
+    }
+
+    function renderVersions(installedVersions, selected) {
+      versionSelect.innerHTML = '';
+
+      if (!installedVersions.length) {
+        var empty = document.createElement('option');
+        empty.value = '';
+        empty.textContent = 'No Bun versions installed';
+        versionSelect.appendChild(empty);
+        return;
+      }
+
+      installedVersions.forEach(function (version) {
+        var option = document.createElement('option');
+        option.value = version;
+        option.textContent = 'Bun ' + version;
+        if (version === selected) option.selected = true;
+        versionSelect.appendChild(option);
+      });
+
+      if (!selected) versionSelect.selectedIndex = 0;
+    }
+
+    function loadLogs() {
+      api('/api/sites/' + encodeURIComponent(bunDomain) + '/logs?lines=100')
+        .then(function (payload) {
+          var text = '';
+          if (payload.err) text += '--- error log ---\n' + payload.err + '\n\n';
+          if (payload.out) text += '--- output log ---\n' + payload.out;
+
+          logsBox.textContent = text.trim() || 'No logs yet.';
+          logsBox.scrollTop = logsBox.scrollHeight;
+        })
+        .catch(function (error) {
+          logsBox.textContent = '[could not load logs] ' + error.message;
+        });
+    }
+
+    function loadSite() {
+      api('/api/sites/' + encodeURIComponent(bunDomain))
+        .then(function (payload) {
+          card.style.display = '';
+          hideReverseProxyCard();
+          enabledInput.checked = Boolean(payload.site.enabled);
+          startScriptInput.value = payload.site.startScript || 'index.ts';
+          portInput.value = payload.site.port || '';
+          renderVersions(payload.installedVersions || [], payload.site.version);
+          renderStatus(payload.status);
+
+          if (payload.site.enabled) {
+            var syncResult = syncReverseProxyPort(payload.site.port);
+
+            if (syncResult === 'synced') return; // page is navigating away to persist it
+
+            if (syncResult === 'unavailable') {
+              showError('Could not find the Reverse Proxy Settings field to point this domain at port ' +
+                payload.site.port + '. Set it manually to http://127.0.0.1:' + payload.site.port +
+                ' if the domain does not respond.');
+            }
+          }
+
+          loadLogs();
+        })
+        .catch(function () {
+          /* Not a Bun site (404) or helper unreachable: keep the card hidden and
+             leave the Reverse Proxy Settings card exactly as CloudPanel rendered
+             it. */
+        });
+    }
+
+    saveButton.addEventListener('click', function () {
+      clearMessages();
+      saveButton.disabled = true;
+      saveButton.textContent = 'Saving...';
+
+      api('/api/sites/' + encodeURIComponent(bunDomain) + '/settings', {
+        method: 'POST',
+        body: JSON.stringify({
+          enabled: enabledInput.checked,
+          version: versionSelect.value || null,
+          startScript: startScriptInput.value.trim(),
+          port: parseInt(portInput.value, 10)
+        })
+      })
+        .then(function (payload) {
+          if (payload.site.enabled) {
+            var syncResult = syncReverseProxyPort(payload.site.port);
+
+            if (syncResult === 'synced') return; // page is navigating away to persist it
+
+            if (syncResult === 'unavailable') {
+              renderStatus(payload.status);
+              showError('Settings saved, but the Reverse Proxy target could not be updated automatically. ' +
+                'Set it manually to http://127.0.0.1:' + payload.site.port + '.');
+              loadLogs();
+              return;
+            }
+          }
+
+          renderStatus(payload.status);
+          showSuccess('Settings saved.');
+          loadLogs();
+        })
+        .catch(function (error) {
+          showError(error.message);
+          loadSite();
+        })
+        .then(function () {
+          saveButton.disabled = false;
+          saveButton.textContent = 'Save';
+        });
+    });
+
+    installDepsButton.addEventListener('click', function () {
+      clearMessages();
+      installDepsButton.disabled = true;
+      installDepsButton.textContent = 'Installing...';
+      logsBox.textContent = 'Running bun install... this can take a while on a slow link.';
+
+      api('/api/sites/' + encodeURIComponent(bunDomain) + '/install', { method: 'POST', body: JSON.stringify({}) })
+        .then(function (payload) {
+          logsBox.textContent = (payload.output || '(no output)').trim();
+          logsBox.scrollTop = logsBox.scrollHeight;
+          showSuccess('Dependencies installed. Restart the application to pick them up.');
+        })
+        .catch(function (error) {
+          logsBox.textContent = '[bun install failed] ' + error.message;
+          showError(error.message);
+        })
+        .then(function () {
+          installDepsButton.disabled = false;
+          installDepsButton.textContent = 'Install Dependencies';
+        });
+    });
+
+    restartButton.addEventListener('click', function () {
+      clearMessages();
+      restartButton.disabled = true;
+      restartButton.textContent = 'Restarting...';
+
+      api('/api/sites/' + encodeURIComponent(bunDomain) + '/restart', { method: 'POST', body: JSON.stringify({}) })
+        .then(function (payload) {
+          renderStatus(payload.status);
+          showSuccess('Application restarted.');
+          setTimeout(loadLogs, 1500);
+        })
+        .catch(function (error) {
+          showError(error.message);
+        })
+        .then(function () {
+          restartButton.disabled = false;
+          restartButton.textContent = 'Restart Application';
+        });
+    });
+
+    logsButton.addEventListener('click', loadLogs);
+
+    loadSite();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
+  }
+})();
+</script>
+{# END cloudpanel-bun-helper #}

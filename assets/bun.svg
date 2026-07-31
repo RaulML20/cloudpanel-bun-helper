@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
+  <circle cx="80" cy="80" r="70" fill="#14151a"/>
+  <ellipse cx="80" cy="84" rx="52" ry="44" fill="#fbf0df" stroke="#f6dece" stroke-width="3"/>
+  <ellipse cx="62" cy="92" rx="7" ry="9" fill="#14151a"/>
+  <ellipse cx="98" cy="92" rx="7" ry="9" fill="#14151a"/>
+  <ellipse cx="64.5" cy="89" rx="2.2" ry="2.8" fill="#ffffff"/>
+  <ellipse cx="100.5" cy="89" rx="2.2" ry="2.8" fill="#ffffff"/>
+  <ellipse cx="49" cy="103" rx="8" ry="5" fill="#febad3" opacity="0.85"/>
+  <ellipse cx="111" cy="103" rx="8" ry="5" fill="#febad3" opacity="0.85"/>
+  <path d="M74 102 q6 7 12 0" stroke="#14151a" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <path d="M62 46 q4 -12 14 -14 q-8 8 -6 16 z" fill="#fbf0df" stroke="#f6dece" stroke-width="2"/>
+  <path d="M78 42 q2 -13 12 -16 q-6 9 -4 17 z" fill="#fbf0df" stroke="#f6dece" stroke-width="2"/>
+  <text x="80" y="146" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#fbf0df">bun</text>
+</svg>
